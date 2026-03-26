@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Bundle
 import android.view.MotionEvent
+import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -46,7 +47,7 @@ class MainActivity : AppCompatActivity() {
         fabHint = binding.fabHint
         addressBar = binding.addressBar
 
-        // Завантаження API ключа
+        // Завантаження збереженого API ключа
         val prefs = getSharedPreferences("naurok_prefs", Context.MODE_PRIVATE)
         apiKey = prefs.getString("api_key", "") ?: ""
 
@@ -63,12 +64,13 @@ class MainActivity : AppCompatActivity() {
             setSupportZoom(true)
             builtInZoomControls = true
             displayZoomControls = false
+            databaseEnabled = true
         }
 
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(WebAppInterface(this), "Android")
 
-        // Адресний рядок
+        // Обробка введення в адресному рядку
         addressBar.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO || 
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
@@ -82,6 +84,7 @@ class MainActivity : AppCompatActivity() {
             } else false
         }
 
+        // Оновлення тексту в рядку при переході по сторінках
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
@@ -91,7 +94,7 @@ class MainActivity : AppCompatActivity() {
 
         webView.loadUrl("https://www.google.com")
 
-        // Draggable FAB (Рухома кнопка)
+        // Налаштування перетягування кнопки (FAB)
         fabHint.setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -140,40 +143,54 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Налаштування API")
-            .setMessage("Отримайте ключ на: https://aistudio.google.com/apikey")
+            .setMessage("Ключ можна отримати безкоштовно на: https://aistudio.google.com/apikey")
             .setView(input)
             .setPositiveButton("Зберегти") { _, _ ->
                 val key = input.text.toString().trim()
                 if (key.isNotEmpty()) {
                     apiKey = key
                     prefs.edit().putString("api_key", key).apply()
-                    Toast.makeText(this, "Збережено", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "API ключ збережено", Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton("Скасувати", null)
+            .setCancelable(false)
             .show()
     }
 
     private fun extractQuestionAndGetHint() {
-        // Оптимізований JS скрипт для Naurok
+        // Покращений JS для пошуку контенту на Naurok
         val js = """
             (function() {
                 try {
                     let question = '';
                     let answers = [];
                     
-                    const qEl = document.querySelector('.question-text, .test-question, h3, h4');
-                    if (qEl) question = qEl.innerText.trim();
+                    // Шукаємо заголовок питання
+                    const qSelectors = ['.question-text', '.test-question-text', '.question-content', 'h3', 'h2'];
+                    for (let s of qSelectors) {
+                        let el = document.querySelector(s);
+                        if (el && el.innerText.trim().length > 3) {
+                            question = el.innerText.trim();
+                            break;
+                        }
+                    }
                     
-                    const labels = document.querySelectorAll('.answer-item, label, .test-multiselect-item');
-                    labels.forEach(el => {
-                        let txt = el.innerText.trim();
-                        if (txt && txt.length > 0 && txt.length < 300) answers.push(txt);
-                    });
+                    // Шукаємо варіанти відповідей
+                    const aSelectors = ['.answer-item', '.test-multiselect-item', 'label', '.answer-text'];
+                    let foundSet = new Set();
+                    for (let s of aSelectors) {
+                        let nodes = document.querySelectorAll(s);
+                        nodes.forEach(n => {
+                            let t = n.innerText.trim();
+                            if (t && t.length > 0 && t.length < 300) foundSet.add(t);
+                        });
+                        if (foundSet.size >= 2) break;
+                    }
                     
                     return JSON.stringify({
                         question: question,
-                        answers: answers.slice(0, 10) // Обмежуємо кількість відповідей
+                        answers: Array.from(foundSet)
                     });
                 } catch (e) {
                     return JSON.stringify({ error: e.message });
@@ -183,25 +200,31 @@ class MainActivity : AppCompatActivity() {
 
         webView.evaluateJavascript(js) { result ->
             try {
-                val clean = result.trim('"').replace("\\\"", "\"").replace("\\n", "\n")
-                val json = JSONObject(clean)
+                // Чистимо результат від лапок та екранування
+                val clean = result.trim('"')
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\")
+                    .replace("\\n", " ")
                 
+                val json = JSONObject(clean)
                 val question = json.optString("question", "")
                 val answersArray = json.optJSONArray("answers")
                 
-                if (question.isEmpty()) {
-                    Toast.makeText(this, "Питання не знайдено", Toast.LENGTH_SHORT).show()
+                if (question.isEmpty() || question == "null") {
+                    Toast.makeText(this, "Питання не знайдено. Переконайтесь, що тест завантажився.", Toast.LENGTH_LONG).show()
                     return@evaluateJavascript
                 }
 
                 val answersList = mutableListOf<String>()
                 answersArray?.let {
-                    for (i in 0 until it.length()) answersList.add(it.getString(i))
+                    for (i in 0 until it.length()) {
+                        answersList.add(it.getString(i))
+                    }
                 }
                 
                 getGeminiHint(question, answersList)
             } catch (e: Exception) {
-                Toast.makeText(this, "Помилка скрипта", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Помилка аналізу сторінки", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -215,18 +238,23 @@ class MainActivity : AppCompatActivity() {
                     .build()
 
                 val prompt = buildString {
-                    append("Питання: $question\n\nВаріанти:\n")
-                    answers.forEachIndexed { i, a -> append("${i + 1}. $a\n") }
-                    append("\nНапиши тільки номер правильної відповіді та коротке пояснення.")
+                    append("Питання: $question\n\n")
+                    append("Варіанти відповідей:\n")
+                    answers.forEachIndexed { index, answer ->
+                        append("${index + 1}. $answer\n")
+                    }
+                    append("\nНапиши номер правильної відповіді та дуже коротке пояснення.")
                 }
 
-                // Виправлена структура JSON та URL (v1beta)
+                // Виправлена структура JSON для Gemini API v1beta
                 val requestBody = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "user")
                             put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", prompt) })
+                                put(JSONObject().apply {
+                                    put("text", prompt)
+                                })
                             })
                         })
                     })
@@ -238,11 +266,12 @@ class MainActivity : AppCompatActivity() {
                     .build()
 
                 val response = client.newCall(request).execute()
-                val resString = response.body?.string() ?: ""
+                val responseBody = response.body?.string()
 
-                if (response.isSuccessful) {
-                    val json = JSONObject(resString)
-                    val text = json.getJSONArray("candidates")
+                if (response.isSuccessful && responseBody != null) {
+                    val jsonResponse = JSONObject(responseBody)
+                    val text = jsonResponse
+                        .getJSONArray("candidates")
                         .getJSONObject(0)
                         .getJSONObject("content")
                         .getJSONArray("parts")
@@ -254,27 +283,37 @@ class MainActivity : AppCompatActivity() {
                     }
                 } else {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "API Error: ${response.code}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "API Помилка: ${response.code}", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Помилка: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Помилка мережі: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
     private fun showHintDialog(question: String, answers: List<String>, hint: String) {
+        val message = buildString {
+            append("📝 Питання: $question\n\n")
+            append("🤖 Підказка:\n$hint")
+        }
+
         AlertDialog.Builder(this)
-            .setTitle("Підказка")
-            .setMessage("❓ $question\n\n🤖 Відповідь:\n$hint")
-            .setPositiveButton("Зрозумів", null)
+            .setTitle("Відповідь Gemini")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Налаштування") { _, _ -> showApiKeyDialog() }
             .show()
     }
 
     override fun onBackPressed() {
-        if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
     }
 
     inner class WebAppInterface(private val context: Context) {
