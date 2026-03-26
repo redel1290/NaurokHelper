@@ -5,12 +5,12 @@ import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.view.MotionEvent
-import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -57,7 +57,8 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
+            loadWithOverviewMode = true
+            useWideViewPort = true
             setSupportZoom(true)
             builtInZoomControls = true
             displayZoomControls = false
@@ -74,17 +75,17 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(WebAppInterface(this), "Android")
         webView.loadUrl("https://naurok.com.ua/test/join")
 
-        // Обробка кнопки пошуку
         addressBar.setOnEditorActionListener { _, actionId, _ ->
-            val input = addressBar.text.toString().trim()
-            if (input.isNotEmpty()) {
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_SEARCH) {
+                val input = addressBar.text.toString().trim()
                 val url = if (input.startsWith("http")) input else "https://www.google.com/search?q=$input"
                 webView.loadUrl(url)
-            }
-            true
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.hideSoftInputFromWindow(addressBar.windowToken, 0)
+                true
+            } else false
         }
 
-        // Draggable FAB
         fabHint.setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -105,9 +106,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         fabHint.setOnClickListener {
-            if (apiKey.isEmpty()) {
-                showApiKeyDialog()
-            } else {
+            if (apiKey.isEmpty()) showApiKeyDialog() 
+            else {
                 Toast.makeText(this, "Аналізую сторінку...", Toast.LENGTH_SHORT).show()
                 extractQuestionAndGetHint()
             }
@@ -118,9 +118,8 @@ class MainActivity : AppCompatActivity() {
         val input = android.widget.EditText(this)
         val prefs = getSharedPreferences("naurok_prefs", Context.MODE_PRIVATE)
         input.setText(prefs.getString("api_key", ""))
-        
         AlertDialog.Builder(this)
-            .setTitle("Введіть API Ключ")
+            .setTitle("API Ключ")
             .setView(input)
             .setCancelable(false)
             .setPositiveButton("Зберегти") { _, _ ->
@@ -130,18 +129,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractQuestionAndGetHint() {
-        // Спрощений скрипт, який гарантовано повертає результат
         val js = """
             (function() {
                 try {
-                    let q = document.querySelector('.question-text, .test-question-text, h3, h2')?.innerText || "";
+                    let q = document.querySelector('.question-text, .test-question-text, h3')?.innerText || "";
                     let opts = Array.from(document.querySelectorAll('.answer-item, label, .test-multiselect-item-text'))
                                     .map(el => el.innerText.trim())
                                     .filter(t => t.length > 0);
-                    
-                    // Якщо специфічні класи не знайдені, беремо весь видимий текст
                     if (!q) q = document.body.innerText.substring(0, 1000);
-
                     return JSON.stringify({ question: q, answers: opts });
                 } catch (e) {
                     return JSON.stringify({ error: e.message });
@@ -153,34 +148,85 @@ class MainActivity : AppCompatActivity() {
             try {
                 val clean = result.trim('"').replace("\\\"", "\"").replace("\\\\", "\\")
                 val json = JSONObject(clean)
-                val question = json.optString("question")
-                val answers = json.optJSONArray("answers")
-                
-                val answersList = mutableListOf<String>()
-                answers?.let { for (i in 0 until it.length()) answersList.add(it.getString(i)) }
-
-                getGeminiHint(question, answersList)
+                getGeminiHint(json.optString("question"), json.optJSONArray("answers"))
             } catch (e: Exception) {
-                Log.e("NAUROK", "JS Error: ${e.message}")
                 Toast.makeText(this, "Помилка скрипта", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private fun getGeminiHint(question: String, answers: List<String>) {
+    private fun getGeminiHint(question: String, answersJson: JSONArray?) {
+        val answers = mutableListOf<String>()
+        answersJson?.let { for (i in 0 until it.length()) answers.add(it.getString(i)) }
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val client = OkHttpClient.Builder()
-                    .connectTimeout(15, TimeUnit.SECONDS)
-                    .readTimeout(15, TimeUnit.SECONDS)
+                    .connectTimeout(20, TimeUnit.SECONDS)
+                    .readTimeout(20, TimeUnit.SECONDS)
                     .build()
 
-                val prompt = "Питання: $question\nВаріанти: ${answers.joinToString(", ")}\nДай коротку відповідь."
+                val prompt = "Питання: $question\nВаріанти: ${answers.joinToString(", ")}\nДай ТІЛЬКИ правильну відповідь."
 
                 val requestBody = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
-                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", prompt) })
+                            })
+                        })
+                    })
+                }
+
+                // Використовуємо стабільний шлях v1
+                val url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=$apiKey"
+
+                val request = Request.Builder()
+                    .url(url)
+                    .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val resBody = response.body?.string()
+
+                withContext(Dispatchers.Main) {
+                    if (response.isSuccessful && resBody != null) {
+                        val text = JSONObject(resBody).getJSONArray("candidates")
+                            .getJSONObject(0).getJSONObject("content")
+                            .getJSONArray("parts").getJSONObject(0).getString("text")
+                        
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Підказка")
+                            .setMessage(text.trim())
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else {
+                        // Якщо v1 видав 404, спробуємо v1beta (для деяких ключів це критично)
+                        if (response.code == 404) {
+                            retryWithBeta(question, answers)
+                        } else {
+                            Toast.makeText(this@MainActivity, "API помилка: ${response.code}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "Помилка мережі", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun retryWithBeta(question: String, answers: List<String>) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).build()
+                val prompt = "Питання: $question\nВаріанти: ${answers.joinToString(", ")}\nВідповідь:"
+                
+                val requestBody = JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user") // v1beta часто вимагає роль
                             put("parts", JSONArray().apply {
                                 put(JSONObject().apply { put("text", prompt) })
                             })
@@ -202,25 +248,13 @@ class MainActivity : AppCompatActivity() {
                             .getJSONObject(0).getJSONObject("content")
                             .getJSONArray("parts").getJSONObject(0).getString("text")
                         
-                        showResultDialog(text)
+                        AlertDialog.Builder(this@MainActivity).setMessage(text.trim()).setPositiveButton("OK", null).show()
                     } else {
-                        Toast.makeText(this@MainActivity, "API помилка: ${response.code}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Навіть Beta повернула 404. Перевірте ключ.", Toast.LENGTH_LONG).show()
                     }
                 }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Помилка мережі", Toast.LENGTH_SHORT).show()
-                }
-            }
+            } catch (e: Exception) { /* ignore */ }
         }
-    }
-
-    private fun showResultDialog(text: String) {
-        AlertDialog.Builder(this)
-            .setTitle("Підказка")
-            .setMessage(text)
-            .setPositiveButton("OK", null)
-            .show()
     }
 
     inner class WebAppInterface(private val context: Context) {
