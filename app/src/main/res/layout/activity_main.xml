@@ -4,11 +4,35 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <WebView
-        android:id="@+id/webView"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
+        <!-- Адресний рядок -->
+        <EditText
+            android:id="@+id/addressBar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:hint="Пошук або введіть URL"
+            android:imeOptions="actionGo"
+            android:inputType="textUri"
+            android:singleLine="true"
+            android:background="#F1F3F4"
+            android:textSize="16sp" />
+
+        <!-- WebView -->
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+    </LinearLayout>
+
+    <!-- Floating кнопка -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabHint"
         android:layout_width="wrap_content"

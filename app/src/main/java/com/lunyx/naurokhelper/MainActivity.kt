@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var webView: WebView
     private lateinit var fabHint: FloatingActionButton
+    private lateinit var addressBar: android.widget.EditText
     private var apiKey: String = ""
     
     private var dX = 0f
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
         webView = binding.webView
         fabHint = binding.fabHint
+        addressBar = binding.addressBar
 
         // Перевірка API ключа
         val prefs = getSharedPreferences("naurok_prefs", Context.MODE_PRIVATE)
@@ -69,8 +71,33 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(WebAppInterface(this), "Android")
 
-        // Завантажуємо Naurok
-        webView.loadUrl("https://naurok.com.ua")
+        // Адресний рядок з пошуком
+        addressBar.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO || 
+                actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                val input = addressBar.text.toString().trim()
+                loadUrl(input)
+                
+                //Ховаємо клавіатуру
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.hideSoftInputFromWindow(addressBar.windowToken, 0)
+                webView.requestFocus()
+                true
+            } else {
+                false
+            }
+        }
+
+        // Оновлення адресного рядка при навігації
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                addressBar.setText(url)
+            }
+        }
+
+        // Завантажуємо Google
+        webView.loadUrl("https://www.google.com")
 
         // Draggable FAB
         fabHint.setOnTouchListener { view, event ->
@@ -101,6 +128,15 @@ class MainActivity : AppCompatActivity() {
                 extractQuestionAndGetHint()
             }
         }
+    }
+
+    private fun loadUrl(input: String) {
+        val url = when {
+            input.startsWith("http://") || input.startsWith("https://") -> input
+            input.contains(".") && !input.contains(" ") -> "https://$input"
+            else -> "https://www.google.com/search?q=${android.net.Uri.encode(input)}"
+        }
+        webView.loadUrl(url)
     }
 
     private fun showApiKeyDialog() {
@@ -245,7 +281,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val request = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey")
+                    .url("https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=$apiKey")
                     .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
