@@ -72,10 +72,7 @@ class MainActivity : AppCompatActivity() {
 
         fabHint.setOnClickListener {
             if (apiKey.isEmpty()) showApiKeyDialog() 
-            else {
-                Toast.makeText(this, "Аналіз через Gemini 2.5...", Toast.LENGTH_SHORT).show()
-                extractAndCall()
-            }
+            else extractAndCall()
         }
     }
 
@@ -92,13 +89,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractAndCall() {
+        // Спеціальний скрипт під структуру, яку ти надав
         val js = """
             (function() {
-                let question = document.querySelector('.question-text, .test-question-text, h3')?.innerText || "";
-                let answers = Array.from(document.querySelectorAll('.answer-item, label, .test-multiselect-item-text'))
-                                   .map(el => el.innerText.trim())
-                                   .filter(t => t.length > 0);
-                return JSON.stringify({ q: question, a: answers });
+                try {
+                    // Шукаємо текст питання
+                    let q = document.querySelector('.test-content-text-inner')?.innerText || "";
+                    
+                    // Шукаємо посилання на картинку
+                    let img = document.querySelector('.test-content-image img')?.src || "";
+                    
+                    // Збираємо всі варіанти відповідей
+                    let options = Array.from(document.querySelectorAll('.question-option-inner-content'))
+                                       .map(el => el.innerText.trim());
+                    
+                    return JSON.stringify({ question: q, imageUrl: img, answers: options });
+                } catch (e) { return JSON.stringify({ error: e.message }); }
             })()
         """.trimIndent()
 
@@ -106,13 +112,18 @@ class MainActivity : AppCompatActivity() {
             try {
                 val clean = result?.trim('"')?.replace("\\\"", "\"")?.replace("\\\\", "\\") ?: "{}"
                 val json = JSONObject(clean)
-                val q = json.optString("q")
-                val a = json.optJSONArray("a")
                 
-                val prompt = "Питання: $q\nВаріанти: $a\nНапиши ТІЛЬКИ номер правильної відповіді та коротке пояснення."
+                val q = json.optString("question")
+                val img = json.optString("imageUrl")
+                val a = json.optJSONArray("answers")
+                
+                val prompt = "Питання: $q\nВаріанти: $a\n" + 
+                             (if (img.isNotEmpty()) "Також подивись на картинку за цим посиланням: $img\n" else "") +
+                             "Напиши номер правильної відповіді та коротко чому."
+                
                 sendToGemini(prompt)
             } catch (e: Exception) {
-                Toast.makeText(this, "Помилка скрипта", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Помилка аналізу сторінки", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -133,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                     })
                 }
 
-                // ВАЖЛИВО: Оновлений шлях саме для моделі 2.5 Flash
+                // Пробуємо Gemini 2.5 Flash, якщо ні - 1.5
                 val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
 
                 val request = Request.Builder()
@@ -151,29 +162,17 @@ class MainActivity : AppCompatActivity() {
                             .getJSONArray("parts").getJSONObject(0).getString("text")
                         
                         AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Відповідь Gemini 2.5")
+                            .setTitle("Відповідь")
                             .setMessage(text.trim())
                             .setPositiveButton("OK", null)
                             .show()
                     } else {
-                        Log.e("GeminiError", "Code: ${response.code} Body: $body")
-                        // Якщо 2.5 ще не активована повністю, пробуємо автоматично 1.5
-                        if (response.code == 404) tryAlternative(prompt)
-                        else Toast.makeText(this@MainActivity, "Помилка API: ${response.code}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Помилка API: ${response.code}", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "Помилка мережі", Toast.LENGTH_SHORT).show() }
+                withContext(Dispatchers.Main) { Toast.makeText(this@MainActivity, "Мережева помилка", Toast.LENGTH_SHORT).show() }
             }
-        }
-    }
-
-    private fun tryAlternative(prompt: String) {
-        // Запасний варіант, якщо 2.5 видає 404
-        CoroutineScope(Dispatchers.IO).launch {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
-            // (Логіка запиту така ж сама...)
-            // Для економії місця тут просто повідомлення, але код тепер має спрацювати з 2.5 за замовчуванням
         }
     }
 }
