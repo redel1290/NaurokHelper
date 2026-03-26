@@ -4,7 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Bundle
 import android.view.MotionEvent
-import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -61,7 +62,7 @@ class MainActivity : AppCompatActivity() {
             builtInZoomControls = true
             displayZoomControls = false
             databaseEnabled = true
-            // Дозволяємо змішаний контент для кращого завантаження скриптів
+            javaScriptCanOpenWindowsAutomatically = true
             mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
@@ -69,10 +70,9 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(WebAppInterface(this), "Android")
 
         addressBar.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO || 
-                actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_SEARCH) {
                 loadUrl(addressBar.text.toString().trim())
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.hideSoftInputFromWindow(addressBar.windowToken, 0)
                 webView.requestFocus()
                 true
@@ -85,6 +85,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Відразу відкриваємо сторінку входу в тест
         webView.loadUrl("https://naurok.com.ua/test/join")
 
         fabHint.setOnTouchListener { view, event ->
@@ -127,50 +128,47 @@ class MainActivity : AppCompatActivity() {
         input.setText(prefs.getString("api_key", ""))
 
         AlertDialog.Builder(this)
-            .setTitle("API Налаштування")
+            .setTitle("Налаштування Gemini")
             .setView(input)
+            .setCancelable(false)
             .setPositiveButton("Зберегти") { _, _ ->
                 apiKey = input.text.toString().trim()
                 prefs.edit().putString("api_key", apiKey).apply()
             }
-            .setNegativeButton("Скасувати", null)
             .show()
     }
 
     private fun extractQuestionAndGetHint() {
-        // УЛЬТРА-Скрипт: шукає текст питання скрізь
+        // Скрипт, який збирає весь видимий текст зі сторінки, якщо не знаходить конкретні класи
         val js = """
             (function() {
                 try {
-                    function findQuestion() {
-                        // Пріоритетні класи Naurok
-                        let q = document.querySelector('.question-text, .test-question-text, .question-content, h3, h2');
-                        if (q && q.innerText.trim().length > 2) return q.innerText.trim();
-                        
-                        // Якщо не знайшли - шукаємо перший великий блок тексту в області тесту
-                        let allDivs = document.querySelectorAll('div');
-                        for (let div of allDivs) {
-                            if (div.innerText.trim().length > 10 && div.children.length === 0) {
-                                return div.innerText.trim();
-                            }
-                        }
-                        return '';
+                    let question = "";
+                    let answers = [];
+
+                    // 1. Спроба знайти за відомими класами
+                    let qEl = document.querySelector('.question-text, .test-question-text, h3');
+                    if (qEl) question = qEl.innerText.trim();
+
+                    // 2. Якщо порожньо, беремо найбільший за площею блок тексту у верхній частині
+                    if (!question) {
+                        let blocks = Array.from(document.querySelectorAll('div, p, span'))
+                            .filter(el => el.innerText.trim().length > 15 && el.children.length <= 2);
+                        if (blocks.length > 0) question = blocks[0].innerText.trim();
                     }
 
-                    function findAnswers() {
-                        let list = [];
-                        // Всі можливі елементи відповідей
-                        let nodes = document.querySelectorAll('.answer-item, .test-multiselect-item, label, .answer-text, [class*="option"]');
-                        nodes.forEach(n => {
-                            let t = n.innerText.trim();
-                            if (t && t.length > 0 && !list.includes(t)) list.push(t);
-                        });
-                        return list;
-                    }
+                    // 3. Збір відповідей (шукаємо елементи, що повторюються)
+                    let options = document.querySelectorAll('.answer-item, label, [class*="option"], .test-multiselect-item');
+                    options.forEach(opt => {
+                        let txt = opt.innerText.trim();
+                        if (txt && !answers.includes(txt) && txt.length < 500) {
+                            answers.push(txt);
+                        }
+                    });
 
                     return JSON.stringify({
-                        question: findQuestion(),
-                        answers: findAnswers()
+                        question: question,
+                        answers: answers
                     });
                 } catch (e) {
                     return JSON.stringify({ error: e.message });
@@ -180,31 +178,24 @@ class MainActivity : AppCompatActivity() {
 
         webView.evaluateJavascript(js) { result ->
             try {
-                val clean = result.trim('"')
-                    .replace("\\\"", "\"")
-                    .replace("\\\\", "\\")
-                    .replace("\\n", " ")
-                
+                val clean = result.trim('"').replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", " ")
                 val json = JSONObject(clean)
+                
                 val question = json.optString("question", "")
-                val answersArray = json.optJSONArray("answers")
+                val answers = json.optJSONArray("answers")
                 
-                if (question.isBlank() || question == "null") {
-                    Toast.makeText(this, "Питання не знайдено. Спробуйте оновити сторінку або прокрутити до питання.", Toast.LENGTH_LONG).show()
-                    return@evaluateJavascript
-                }
-
-                val answersList = mutableListOf<String>()
-                answersArray?.let {
-                    for (i in 0 until it.length()) {
-                        val text = it.getString(i)
-                        if (text.length > 1) answersList.add(text)
+                if (question.isBlank() || (answers != null && answers.length() == 0)) {
+                    // Якщо стандартний пошук не спрацював, беремо ВЕСЬ текст сторінки як запасний варіант
+                    webView.evaluateJavascript("document.body.innerText") { bodyText ->
+                        getGeminiHint("Контекст сторінки: " + bodyText.take(1000), emptyList())
                     }
+                } else {
+                    val list = mutableListOf<String>()
+                    answers?.let { for (i in 0 until it.length()) list.add(it.getString(i)) }
+                    getGeminiHint(question, list)
                 }
-                
-                getGeminiHint(question, answersList)
             } catch (e: Exception) {
-                Toast.makeText(this, "Помилка парсингу сторінки", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Помилка зчитування", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -216,15 +207,17 @@ class MainActivity : AppCompatActivity() {
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .build()
 
-                val prompt = "Питання: $question\nВаріанти: ${answers.joinToString(", ")}\nНапиши тільки номер правильної відповіді (або декілька) і коротке пояснення."
+                val prompt = if (answers.isEmpty()) {
+                    "Знайди питання на цій сторінці та дай відповідь: $question"
+                } else {
+                    "Питання: $question\nВаріанти: ${answers.joinToString(" | ")}\nНапиши ТІЛЬКИ правильну відповідь."
+                }
 
                 val requestBody = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", prompt) })
-                            })
+                            put("parts", JSONArray().apply { put(JSONObject().apply { put("text", prompt) }) })
                         })
                     })
                 }
@@ -245,18 +238,14 @@ class MainActivity : AppCompatActivity() {
                     withContext(Dispatchers.Main) {
                         AlertDialog.Builder(this@MainActivity)
                             .setTitle("Підказка")
-                            .setMessage(text)
+                            .setMessage(text.trim())
                             .setPositiveButton("OK", null)
                             .show()
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Помилка API: ${response.code}", Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Помилка мережі", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Помилка мережі або API", Toast.LENGTH_SHORT).show()
                 }
             }
         }
