@@ -47,15 +47,11 @@ class MainActivity : AppCompatActivity() {
         fabHint = binding.fabHint
         addressBar = binding.addressBar
 
-        // Завантаження збереженого API ключа
         val prefs = getSharedPreferences("naurok_prefs", Context.MODE_PRIVATE)
         apiKey = prefs.getString("api_key", "") ?: ""
 
-        if (apiKey.isEmpty()) {
-            showApiKeyDialog()
-        }
+        if (apiKey.isEmpty()) showApiKeyDialog()
 
-        // Налаштування WebView
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -65,18 +61,17 @@ class MainActivity : AppCompatActivity() {
             builtInZoomControls = true
             displayZoomControls = false
             databaseEnabled = true
+            // Дозволяємо змішаний контент для кращого завантаження скриптів
+            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(WebAppInterface(this), "Android")
 
-        // Обробка введення в адресному рядку
         addressBar.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO || 
                 actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
-                val input = addressBar.text.toString().trim()
-                loadUrl(input)
-                
+                loadUrl(addressBar.text.toString().trim())
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 imm.hideSoftInputFromWindow(addressBar.windowToken, 0)
                 webView.requestFocus()
@@ -84,17 +79,14 @@ class MainActivity : AppCompatActivity() {
             } else false
         }
 
-        // Оновлення тексту в рядку при переході по сторінках
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                super.onPageStarted(view, url, favicon)
                 addressBar.setText(url)
             }
         }
 
-        webView.loadUrl("https://www.google.com")
+        webView.loadUrl("https://naurok.com.ua/test/join")
 
-        // Налаштування перетягування кнопки (FAB)
         fabHint.setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -108,20 +100,14 @@ class MainActivity : AppCompatActivity() {
                     lastAction = MotionEvent.ACTION_MOVE
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (lastAction == MotionEvent.ACTION_DOWN) {
-                        view.performClick()
-                    }
+                    if (lastAction == MotionEvent.ACTION_DOWN) view.performClick()
                 }
             }
             true
         }
 
         fabHint.setOnClickListener {
-            if (apiKey.isEmpty()) {
-                showApiKeyDialog()
-            } else {
-                extractQuestionAndGetHint()
-            }
+            if (apiKey.isEmpty()) showApiKeyDialog() else extractQuestionAndGetHint()
         }
     }
 
@@ -137,60 +123,54 @@ class MainActivity : AppCompatActivity() {
     private fun showApiKeyDialog() {
         val input = android.widget.EditText(this)
         input.hint = "Вставте Gemini API ключ"
-        
         val prefs = getSharedPreferences("naurok_prefs", Context.MODE_PRIVATE)
         input.setText(prefs.getString("api_key", ""))
 
         AlertDialog.Builder(this)
-            .setTitle("Налаштування API")
-            .setMessage("Ключ можна отримати безкоштовно на: https://aistudio.google.com/apikey")
+            .setTitle("API Налаштування")
             .setView(input)
             .setPositiveButton("Зберегти") { _, _ ->
-                val key = input.text.toString().trim()
-                if (key.isNotEmpty()) {
-                    apiKey = key
-                    prefs.edit().putString("api_key", key).apply()
-                    Toast.makeText(this, "API ключ збережено", Toast.LENGTH_SHORT).show()
-                }
+                apiKey = input.text.toString().trim()
+                prefs.edit().putString("api_key", apiKey).apply()
             }
             .setNegativeButton("Скасувати", null)
-            .setCancelable(false)
             .show()
     }
 
     private fun extractQuestionAndGetHint() {
-        // Покращений JS для пошуку контенту на Naurok
+        // УЛЬТРА-Скрипт: шукає текст питання скрізь
         val js = """
             (function() {
                 try {
-                    let question = '';
-                    let answers = [];
-                    
-                    // Шукаємо заголовок питання
-                    const qSelectors = ['.question-text', '.test-question-text', '.question-content', 'h3', 'h2'];
-                    for (let s of qSelectors) {
-                        let el = document.querySelector(s);
-                        if (el && el.innerText.trim().length > 3) {
-                            question = el.innerText.trim();
-                            break;
+                    function findQuestion() {
+                        // Пріоритетні класи Naurok
+                        let q = document.querySelector('.question-text, .test-question-text, .question-content, h3, h2');
+                        if (q && q.innerText.trim().length > 2) return q.innerText.trim();
+                        
+                        // Якщо не знайшли - шукаємо перший великий блок тексту в області тесту
+                        let allDivs = document.querySelectorAll('div');
+                        for (let div of allDivs) {
+                            if (div.innerText.trim().length > 10 && div.children.length === 0) {
+                                return div.innerText.trim();
+                            }
                         }
+                        return '';
                     }
-                    
-                    // Шукаємо варіанти відповідей
-                    const aSelectors = ['.answer-item', '.test-multiselect-item', 'label', '.answer-text'];
-                    let foundSet = new Set();
-                    for (let s of aSelectors) {
-                        let nodes = document.querySelectorAll(s);
+
+                    function findAnswers() {
+                        let list = [];
+                        // Всі можливі елементи відповідей
+                        let nodes = document.querySelectorAll('.answer-item, .test-multiselect-item, label, .answer-text, [class*="option"]');
                         nodes.forEach(n => {
                             let t = n.innerText.trim();
-                            if (t && t.length > 0 && t.length < 300) foundSet.add(t);
+                            if (t && t.length > 0 && !list.includes(t)) list.push(t);
                         });
-                        if (foundSet.size >= 2) break;
+                        return list;
                     }
-                    
+
                     return JSON.stringify({
-                        question: question,
-                        answers: Array.from(foundSet)
+                        question: findQuestion(),
+                        answers: findAnswers()
                     });
                 } catch (e) {
                     return JSON.stringify({ error: e.message });
@@ -200,7 +180,6 @@ class MainActivity : AppCompatActivity() {
 
         webView.evaluateJavascript(js) { result ->
             try {
-                // Чистимо результат від лапок та екранування
                 val clean = result.trim('"')
                     .replace("\\\"", "\"")
                     .replace("\\\\", "\\")
@@ -210,21 +189,22 @@ class MainActivity : AppCompatActivity() {
                 val question = json.optString("question", "")
                 val answersArray = json.optJSONArray("answers")
                 
-                if (question.isEmpty() || question == "null") {
-                    Toast.makeText(this, "Питання не знайдено. Переконайтесь, що тест завантажився.", Toast.LENGTH_LONG).show()
+                if (question.isBlank() || question == "null") {
+                    Toast.makeText(this, "Питання не знайдено. Спробуйте оновити сторінку або прокрутити до питання.", Toast.LENGTH_LONG).show()
                     return@evaluateJavascript
                 }
 
                 val answersList = mutableListOf<String>()
                 answersArray?.let {
                     for (i in 0 until it.length()) {
-                        answersList.add(it.getString(i))
+                        val text = it.getString(i)
+                        if (text.length > 1) answersList.add(text)
                     }
                 }
                 
                 getGeminiHint(question, answersList)
             } catch (e: Exception) {
-                Toast.makeText(this, "Помилка аналізу сторінки", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Помилка парсингу сторінки", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -234,27 +214,16 @@ class MainActivity : AppCompatActivity() {
             try {
                 val client = OkHttpClient.Builder()
                     .connectTimeout(30, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
                     .build()
 
-                val prompt = buildString {
-                    append("Питання: $question\n\n")
-                    append("Варіанти відповідей:\n")
-                    answers.forEachIndexed { index, answer ->
-                        append("${index + 1}. $answer\n")
-                    }
-                    append("\nНапиши номер правильної відповіді та дуже коротке пояснення.")
-                }
+                val prompt = "Питання: $question\nВаріанти: ${answers.joinToString(", ")}\nНапиши тільки номер правильної відповіді (або декілька) і коротке пояснення."
 
-                // Виправлена структура JSON для Gemini API v1beta
                 val requestBody = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "user")
                             put("parts", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("text", prompt)
-                                })
+                                put(JSONObject().apply { put("text", prompt) })
                             })
                         })
                     })
@@ -266,60 +235,38 @@ class MainActivity : AppCompatActivity() {
                     .build()
 
                 val response = client.newCall(request).execute()
-                val responseBody = response.body?.string()
+                val resBody = response.body?.string()
 
-                if (response.isSuccessful && responseBody != null) {
-                    val jsonResponse = JSONObject(responseBody)
-                    val text = jsonResponse
-                        .getJSONArray("candidates")
-                        .getJSONObject(0)
-                        .getJSONObject("content")
-                        .getJSONArray("parts")
-                        .getJSONObject(0)
-                        .getString("text")
+                if (response.isSuccessful && resBody != null) {
+                    val text = JSONObject(resBody).getJSONArray("candidates")
+                        .getJSONObject(0).getJSONObject("content")
+                        .getJSONArray("parts").getJSONObject(0).getString("text")
 
                     withContext(Dispatchers.Main) {
-                        showHintDialog(question, answers, text)
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Підказка")
+                            .setMessage(text)
+                            .setPositiveButton("OK", null)
+                            .show()
                     }
                 } else {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "API Помилка: ${response.code}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Помилка API: ${response.code}", Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Помилка мережі: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Помилка мережі", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    private fun showHintDialog(question: String, answers: List<String>, hint: String) {
-        val message = buildString {
-            append("📝 Питання: $question\n\n")
-            append("🤖 Підказка:\n$hint")
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Відповідь Gemini")
-            .setMessage(message)
-            .setPositiveButton("OK", null)
-            .setNeutralButton("Налаштування") { _, _ -> showApiKeyDialog() }
-            .show()
-    }
-
     override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
+        if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
 
     inner class WebAppInterface(private val context: Context) {
-        @JavascriptInterface
-        fun showToast(message: String) {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
+        @JavascriptInterface fun showToast(m: String) = Toast.makeText(context, m, Toast.LENGTH_SHORT).show()
     }
 }
